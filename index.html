@@ -126,6 +126,10 @@ h2{font-family:'Fraunces',Georgia,serif;font-size:21px;font-weight:600;letter-sp
   font-variant-numeric:tabular-nums;align-self:center;padding-left:8px}
 .task.done .pts{color:var(--good)}
 .hint{margin-top:17px;font-size:12.5px;color:var(--ink-3);line-height:1.5}
+.sinc-avertisment{margin:-6px 0 16px;padding:12px 14px;border-radius:12px;font-size:13px;
+  line-height:1.5;color:var(--alert);background:rgba(255,138,122,.1);
+  border:1px solid rgba(255,138,122,.28)}
+.sinc-avertisment[hidden]{display:none}
 
 /* ---------- vremea ---------- */
 .temp{display:flex;align-items:flex-start;gap:15px;margin-bottom:16px}
@@ -452,7 +456,7 @@ html.cu-salut body.intra .wrap .card{animation:cardIntra .95s var(--lin) both}
       </label>
       <button type="button" class="lock-btn" id="lockbtn">Verifică parola</button>
       <p class="lock-err" id="lockerr"></p>
-      <p class="versiune">v9</p>
+      <p class="versiune">v10</p>
     </div>
   </div>
 </div>
@@ -470,7 +474,7 @@ html.cu-salut body.intra .wrap .card{animation:cardIntra .95s var(--lin) both}
 
   <header>
     <div class="eyebrow"><span class="dot"></span><span id="daylabel">—</span></div>
-    <h1>Bună dimineața,<br><span class="accent">Rozi</span></h1>
+    <h1><span id="salut">Bună dimineața</span>,<br><span class="accent">Rozi</span></h1>
     <p class="subline">
       <span class="clock" id="clock">—</span>
       <span class="sep"></span><span id="summary">—</span>
@@ -503,6 +507,10 @@ html.cu-salut body.intra .wrap .card{animation:cardIntra .95s var(--lin) both}
     <section class="card">
       <div class="card-head"><h2>Taskurile zilei</h2><span class="card-note" id="progresslabel">—</span></div>
       <div class="meter"><span id="meterfill" style="transform:scaleX(0)"></span></div>
+      <p class="sinc-avertisment" id="sincstare" hidden>
+        Nu ajung la server chiar acum, așa că bifele de aici s-ar putea să nu se vadă
+        pe celelalte dispozitive. Încerc din nou singură.
+      </p>
       <ul class="tasks" id="tasklist"></ul>
       <p class="hint">Un click pe task îi schimbă starea: <strong>în lucru → gata → neînceput</strong>.
         Fiecare task dus la capăt îți aduce un punct.</p>
@@ -965,63 +973,121 @@ function scrieLocal(){
   }catch(e){}
 }
 
-async function incarcaIstoric(){
-  // pornim de la ce avem pe dispozitiv, ca pagina să meargă și fără rețea
-  Object.assign(istoric, citesteLocal());
+/* Serverul e SINGURA sursă de adevăr. Memoria din telefon e doar o copie, ca
+   pagina să arate ceva instant și să meargă offline — dar când serverul răspunde,
+   el are ultimul cuvânt și copia locală se rescrie după el. Altfel laptopul, care
+   nu știe ce ai bifat pe telefon, ar putea șterge progresul. */
+let sincronizat = false;
 
-  if(SERVER){
-    try{
-      const r = await fetch("/api/stare",{credentials:"same-origin"});
-      if(r.ok) Object.assign(istoric, await r.json());
-    }catch(e){}
-  }else if(SINC.url){
-    try{
-      // cu limită de timp: dacă scriptul nu răspunde, pagina NU rămâne goală
-      const stop = new AbortController();
-      const ceas = setTimeout(()=>stop.abort(), 7000);
-      const r = await fetch(SINC.url+"?cheie="+encodeURIComponent(SINC.cheie), {signal:stop.signal});
-      clearTimeout(ceas);
-      if(r.ok){
-        const d = await r.json();
-        if(d && !d.eroare){ Object.assign(istoric, d); scrieLocal(); }
-      }
-    }catch(e){ /* offline, prea lent sau scriptul tace — mergem pe copia locală */ }
-  }
+function inlocuiesteIstoric(nou){
+  Object.keys(istoric).forEach(k => delete istoric[k]);
+  Object.assign(istoric, nou);
+}
+
+function aplicaStarile(){
   if(!istoric[AZI]) istoric[AZI] = { gata:[] };
   const gataAzi = new Set(istoric[AZI].gata || []);
   // „neînceput” trăiește doar în sesiunea curentă; tot ce nu e gata pornește în lucru
-  TASKURI.forEach(t => { stariLocale[t.id] = gataAzi.has(t.id) ? "done" : "progress"; });
+  TASKURI.forEach(t => {
+    if(gataAzi.has(t.id)) stariLocale[t.id] = "done";
+    else if(stariLocale[t.id] !== "idle") stariLocale[t.id] = "progress";
+    else stariLocale[t.id] = "idle";
+  });
+}
+
+async function ceruteDeLaServer(){
+  if(SERVER){
+    const r = await fetch("/api/stare",{credentials:"same-origin"});
+    if(!r.ok) throw new Error("raspuns " + r.status);
+    return await r.json();
+  }
+  const stop = new AbortController();
+  const ceas = setTimeout(()=>stop.abort(), 9000);
+  try{
+    const r = await fetch(SINC.url + "?cheie=" + encodeURIComponent(SINC.cheie) +
+                          "&t=" + Date.now(), {signal:stop.signal, cache:"no-store"});
+    if(!r.ok) throw new Error("raspuns " + r.status);
+    const d = await r.json();
+    if(!d || d.eroare) throw new Error(d && d.eroare ? d.eroare : "raspuns gol");
+    return d;
+  } finally { clearTimeout(ceas); }
+}
+
+async function incarcaIstoric(){
+  // afișăm imediat copia locală, ca pagina să nu fie goală
+  inlocuiesteIstoric(citesteLocal());
+  aplicaStarile();
+
+  if(!SERVER && !SINC.url){ sincronizat = true; return; }
+
+  try{
+    const d = await ceruteDeLaServer();
+    inlocuiesteIstoric(d);        // serverul are ultimul cuvânt
+    scrieLocal();
+    sincronizat = true;
+  }catch(e){
+    sincronizat = false;          // rămânem pe copia locală, dar o spunem pe față
+  }
+  aplicaStarile();
+  aratăSincronizarea();
+}
+
+/** Reia starea de la server — la revenirea în pagină și din minut în minut. */
+async function resincronizeaza(){
+  if(!SERVER && !SINC.url) return;
+  try{
+    const d = await ceruteDeLaServer();
+    inlocuiesteIstoric(d);
+    scrieLocal();
+    sincronizat = true;
+    aplicaStarile();
+    deseneaza();
+  }catch(e){
+    sincronizat = false;
+    aratăSincronizarea();
+  }
+}
+
+function aratăSincronizarea(){
+  const el = document.getElementById("sincstare");
+  if(!el) return;
+  if(sincronizat){ el.hidden = true; return; }
+  el.hidden = false;
 }
 
 let amanareSalvare = null;
-function salveaza(){
-  istoric[AZI] = { gata: TASKURI.filter(t=>stariLocale[t.id]==="done").map(t=>t.id) };
-  if(SERVER){
-    clearTimeout(amanareSalvare);
-    amanareSalvare = setTimeout(()=>{
-      fetch("/api/stare",{
+
+function trimiteLaServer(){
+  const gata = istoric[AZI].gata;
+
+  const cerere = SERVER
+    ? fetch("/api/stare",{
         method:"POST", credentials:"same-origin",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ gata: istoric[AZI].gata })
-      }).catch(()=>{});
-    }, 900);
-    return;
-  }
-
-  scrieLocal();   // întotdeauna păstrăm o copie pe dispozitiv
-
-  if(SINC.url){
-    clearTimeout(amanareSalvare);
-    amanareSalvare = setTimeout(()=>{
-      // „text/plain” e intenționat: așa cererea rămâne simplă și scriptul
-      // Google o acceptă fără verificarea suplimentară care ar bloca-o.
-      fetch(SINC.url,{
+        body: JSON.stringify({ gata })
+      })
+    // „text/plain” e intenționat: așa cererea rămâne simplă și scriptul Google
+    // o acceptă fără verificarea preliminară care ar bloca-o.
+    : fetch(SINC.url,{
         method:"POST",
         headers:{"Content-Type":"text/plain;charset=utf-8"},
-        body: JSON.stringify({ cheie:SINC.cheie, data:AZI, gata:istoric[AZI].gata })
-      }).catch(()=>{});
-    }, 900);
-  }
+        body: JSON.stringify({ cheie:SINC.cheie, data:AZI, gata })
+      });
+
+  return cerere
+    .then(r => { if(!r.ok) throw new Error("raspuns " + r.status);
+                 sincronizat = true; aratăSincronizarea(); })
+    .catch(() => { sincronizat = false; aratăSincronizarea(); });
+}
+
+function salveaza(){
+  istoric[AZI] = { gata: TASKURI.filter(t=>stariLocale[t.id]==="done").map(t=>t.id) };
+  scrieLocal();   // copie pe dispozitiv, ca să meargă și offline
+
+  if(!SERVER && !SINC.url) return;
+
+  clearTimeout(amanareSalvare);
+  amanareSalvare = setTimeout(trimiteLaServer, 800);
 }
 
 function puncteZi(zi){ const r=istoric[zi]; return r && r.gata ? r.gata.length : null; }
@@ -1188,9 +1254,30 @@ function randeazaConținut(){
   document.getElementById("provera").textContent=p.e;
 }
 
+/* Salutul se schimbă după ceas, în ora României:
+   6:00–11:59 dimineața · 12:00–17:59 ziua · 18:00–5:59 seara */
+function oraDeAcum(){
+  return Number(new Intl.DateTimeFormat("ro-RO",{
+    timeZone:"Europe/Bucharest", hour:"2-digit", hourCycle:"h23"
+  }).format(new Date()));
+}
+
+function salutulPotrivit(){
+  const ora = oraDeAcum();
+  if(ora >= 6 && ora < 12) return "Bună dimineața";
+  if(ora >= 12 && ora < 18) return "Bună ziua";
+  return "Bună seara";
+}
+
 function ceas(){
   document.getElementById("clock").textContent =
-    new Date().toLocaleTimeString("ro-RO",{hour:"2-digit",minute:"2-digit"});
+    new Date().toLocaleTimeString("ro-RO",{timeZone:"Europe/Bucharest",hour:"2-digit",minute:"2-digit"});
+
+  const salut = salutulPotrivit();
+  const capul = document.getElementById("salut");
+  if(capul && capul.textContent !== salut) capul.textContent = salut;
+  const introSalut = document.getElementById("intro1");
+  if(introSalut && introSalut.textContent !== salut) introSalut.textContent = salut;
 }
 
 /* ==========================================================================
@@ -1442,12 +1529,18 @@ function deseneaza(){
   randeazaRecomandari();
 }
 
-Object.assign(istoric, citesteLocal());
-if(!istoric[AZI]) istoric[AZI] = { gata:[] };
-TASKURI.forEach(t => { stariLocale[t.id] = (istoric[AZI].gata||[]).includes(t.id) ? "done" : "progress"; });
+inlocuiesteIstoric(citesteLocal());
+aplicaStarile();
 deseneaza();
 
 incarcaIstoric().then(deseneaza).catch(()=>{});
+
+/* Progresul e unul singur, comun tuturor dispozitivelor. Ca laptopul să afle ce
+   ai bifat pe telefon fără să dai refresh, reluăm starea de la server la fiecare
+   revenire în pagină și din minut în minut cât timp pagina e deschisă. */
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) resincronizeaza(); });
+window.addEventListener("focus", resincronizeaza);
+setInterval(resincronizeaza, 60000);
 
 porneșteVremea().catch(()=>fallbackBucuresti("Vremea n-a putut fi încărcată acum."));
 </script>
