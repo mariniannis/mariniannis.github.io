@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#140C22">
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Rozi's Everyday Tasks</title>
@@ -126,10 +127,23 @@ h2{font-family:'Fraunces',Georgia,serif;font-size:21px;font-weight:600;letter-sp
   font-variant-numeric:tabular-nums;align-self:center;padding-left:8px}
 .task.done .pts{color:var(--good)}
 .hint{margin-top:17px;font-size:12.5px;color:var(--ink-3);line-height:1.5}
-.sinc-avertisment{margin:-6px 0 16px;padding:12px 14px;border-radius:12px;font-size:13px;
-  line-height:1.5;color:var(--alert);background:rgba(255,138,122,.1);
-  border:1px solid rgba(255,138,122,.28)}
-.sinc-avertisment[hidden]{display:none}
+.sinc{margin:-6px 0 16px;padding:11px 14px;border-radius:12px;font-size:12.5px;
+  line-height:1.5;display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  border:1px solid;transition:color .3s var(--moale),background .3s var(--moale),
+  border-color .3s var(--moale)}
+.sinc[hidden]{display:none}
+.sinc-punct{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.sinc.gata,.sinc.citit{color:var(--good);background:rgba(78,216,160,.09);
+  border-color:rgba(78,216,160,.26)}
+.sinc.trimit{color:var(--progress);background:rgba(255,194,75,.1);
+  border-color:rgba(255,194,75,.28)}
+.sinc.trimit .sinc-punct{animation:pulseVerde 1.1s infinite}
+.sinc.esuat{color:var(--alert);background:rgba(255,138,122,.1);
+  border-color:rgba(255,138,122,.3)}
+.sinc-btn{margin-left:auto;padding:7px 13px;border-radius:9px;cursor:pointer;
+  font:inherit;font-size:12px;font-weight:650;color:inherit;
+  background:rgba(255,255,255,.08);border:1px solid currentColor}
+.sinc-btn:hover{background:rgba(255,255,255,.14)}
 
 /* ---------- vremea ---------- */
 .temp{display:flex;align-items:flex-start;gap:15px;margin-bottom:16px}
@@ -456,7 +470,7 @@ html.cu-salut body.intra .wrap .card{animation:cardIntra .95s var(--lin) both}
       </label>
       <button type="button" class="lock-btn" id="lockbtn">Verifică parola</button>
       <p class="lock-err" id="lockerr"></p>
-      <p class="versiune">v10</p>
+      <p class="versiune">v11</p>
     </div>
   </div>
 </div>
@@ -507,10 +521,7 @@ html.cu-salut body.intra .wrap .card{animation:cardIntra .95s var(--lin) both}
     <section class="card">
       <div class="card-head"><h2>Taskurile zilei</h2><span class="card-note" id="progresslabel">—</span></div>
       <div class="meter"><span id="meterfill" style="transform:scaleX(0)"></span></div>
-      <p class="sinc-avertisment" id="sincstare" hidden>
-        Nu ajung la server chiar acum, așa că bifele de aici s-ar putea să nu se vadă
-        pe celelalte dispozitive. Încerc din nou singură.
-      </p>
+      <div class="sinc" id="sincstare" hidden></div>
       <ul class="tasks" id="tasklist"></ul>
       <p class="hint">Un click pe task îi schimbă starea: <strong>în lucru → gata → neînceput</strong>.
         Fiecare task dus la capăt îți aduce un punct.</p>
@@ -1048,36 +1059,106 @@ async function resincronizeaza(){
   }
 }
 
-function aratăSincronizarea(){
+/* Starea sincronizării, scrisă pe față. Nu vreau să crezi vreodată că s-a
+   salvat ceva ce n-a plecat de pe telefon. */
+function starea(fel){
   const el = document.getElementById("sincstare");
   if(!el) return;
-  if(sincronizat){ el.hidden = true; return; }
   el.hidden = false;
+  el.className = "sinc " + fel;
+
+  if(fel === "trimit"){
+    el.innerHTML = '<span class="sinc-punct"></span>Salvez pe server…';
+  } else if(fel === "gata"){
+    const ora = new Date().toLocaleTimeString("ro-RO",
+      {timeZone:"Europe/Bucharest", hour:"2-digit", minute:"2-digit"});
+    el.innerHTML = '<span class="sinc-punct"></span>Salvat pe server la ' + ora +
+                   ' · se vede pe toate dispozitivele';
+  } else if(fel === "citit"){
+    el.innerHTML = '<span class="sinc-punct"></span>La zi cu serverul';
+  } else {
+    el.innerHTML = '<span class="sinc-punct"></span>' +
+      '<span>Nu am reușit să salvez pe server. Bifele de aici încă n-au ajuns ' +
+      'pe celelalte dispozitive.</span>' +
+      '<button type="button" class="sinc-btn" id="sincretry">Încearcă din nou</button>';
+    const b = document.getElementById("sincretry");
+    if(b) b.addEventListener("click", ()=>trimiteLaServer());
+  }
+}
+
+function aratăSincronizarea(){
+  starea(sincronizat ? "citit" : "esuat");
 }
 
 let amanareSalvare = null;
 
-function trimiteLaServer(){
-  const gata = istoric[AZI].gata;
+/* O singură încercare de trimitere. */
+function oTrimitere(gata){
+  if(SERVER){
+    return fetch("/api/stare",{
+      method:"POST", credentials:"same-origin", cache:"no-store",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ gata })
+    }).then(r => { if(!r.ok) throw new Error("raspuns " + r.status); return true; });
+  }
+  // „text/plain” e intenționat: așa cererea rămâne simplă și scriptul Google
+  // o acceptă fără verificarea preliminară care ar bloca-o.
+  return fetch(SINC.url, {
+    method:"POST", cache:"no-store",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body: JSON.stringify({ cheie:SINC.cheie, data:AZI, gata })
+  }).then(r => { if(!r.ok) throw new Error("raspuns " + r.status); return true; });
+}
 
-  const cerere = SERVER
-    ? fetch("/api/stare",{
-        method:"POST", credentials:"same-origin",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ gata })
-      })
-    // „text/plain” e intenționat: așa cererea rămâne simplă și scriptul Google
-    // o acceptă fără verificarea preliminară care ar bloca-o.
-    : fetch(SINC.url,{
-        method:"POST",
-        headers:{"Content-Type":"text/plain;charset=utf-8"},
-        body: JSON.stringify({ cheie:SINC.cheie, data:AZI, gata })
-      });
+/* Plasă de siguranță: dacă browserul refuză să citească răspunsul (reguli între
+   domenii), trimitem oricum datele — pe „no-cors” cererea pleacă, doar că nu-i
+   mai vedem răspunsul. Confirmăm apoi recitind starea de la server. */
+function trimitereOarba(gata){
+  return fetch(SINC.url, {
+    method:"POST", mode:"no-cors", cache:"no-store",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body: JSON.stringify({ cheie:SINC.cheie, data:AZI, gata })
+  }).then(()=>true);
+}
 
-  return cerere
-    .then(r => { if(!r.ok) throw new Error("raspuns " + r.status);
-                 sincronizat = true; aratăSincronizarea(); })
-    .catch(() => { sincronizat = false; aratăSincronizarea(); });
+let seTrimite = false;
+
+/** Insistă până reușește: trei încercări, apoi varianta oarbă, apoi verificare. */
+async function trimiteLaServer(){
+  if(seTrimite) return;
+  seTrimite = true;
+  const gata = istoric[AZI].gata.slice();
+  starea("trimit");
+
+  try{
+    for(let i = 0; i < 3; i++){
+      try{
+        await oTrimitere(gata);
+        sincronizat = true; starea("gata");
+        return;
+      }catch(e){
+        if(i < 2) await new Promise(r => setTimeout(r, 700 * (i + 1)));
+      }
+    }
+
+    if(!SERVER && SINC.url){
+      try{
+        await trimitereOarba(gata);
+        // n-am putut citi răspunsul; întrebăm serverul dacă a primit
+        await new Promise(r => setTimeout(r, 1200));
+        const d = await ceruteDeLaServer().catch(()=>null);
+        const ajuns = d && d[AZI] && Array.isArray(d[AZI].gata) &&
+                      d[AZI].gata.length === gata.length;
+        if(ajuns){ sincronizat = true; starea("gata"); return; }
+      }catch(e){}
+    }
+
+    sincronizat = false; starea("esuat");
+  } finally {
+    seTrimite = false;
+    // dacă ai mai bifat ceva între timp, trimitem și starea aia
+    if(istoric[AZI].gata.length !== gata.length) trimiteLaServer();
+  }
 }
 
 function salveaza(){
