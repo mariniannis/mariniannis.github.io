@@ -470,7 +470,7 @@ html.cu-salut body.intra .wrap .card{animation:cardIntra .95s var(--lin) both}
       </label>
       <button type="button" class="lock-btn" id="lockbtn">Verifică parola</button>
       <p class="lock-err" id="lockerr"></p>
-      <p class="versiune">v13</p>
+      <p class="versiune">v14</p>
     </div>
   </div>
 </div>
@@ -737,8 +737,8 @@ const MAX_INCERCARI = 3;
 let incercariGresite = 0;
 
 function anuntaIntruziune(){
-  if(!SINC.url) return;
-  cereScriptului({ actiune:"alerta", cand:new Date().toISOString() }).catch(()=>{});
+  if(!SINC.formular) return;
+  scrieInFormular(["ALERTA-PAROLA"]).catch(()=>{});
 }
 
 document.getElementById("ochi").addEventListener("click", ()=>{
@@ -956,8 +956,11 @@ const SERVER = document.body.dataset.server === "1";
    Câtă vreme `url` e gol, pagina merge normal, doar că punctajul rămâne
    pe dispozitiv. Se completează după ce scriptul e publicat. */
 const SINC = {
-  url: "https://script.google.com/macros/s/AKfycbxZ1AJ6Hyj6QfJzNbT2mIWK63K5UGuuDhGvkZaIq3jBDdKNFDX-vzyZ2ovfzSAFIP-Bqw/exec",
-  cheie: "rozi-ziua-mea-2026"
+  // Scrierea trece printr-un formular Google: canal anonim, pe care browserul
+  // nu-l poate refuza. Citirea vine din foaia de raspunsuri, publica la citire.
+  formular: "https://docs.google.com/forms/d/e/1FAIpQLSfy3lrsyxztanmUJ_qvTrDqm8nUU1oWq_FwXrSDGE4wlpgQ0g/formResponse",
+  camp: "entry.765877528",
+  foaie: "1AYKsoFom0T4OIq85bdYUv2UAcjcdcvOtb_NSMnljPwA"
 };
 
 const istoric = {};
@@ -1007,26 +1010,50 @@ function aplicaStarile(){
    --------------------------------------------------------------------------- */
 let nrCereri = 0;
 
-function cereScriptului(parametri){
+/* Citirea: incarcam foaia de raspunsuri ca element de script, fara reguli intre domenii. */
+function citesteFoaia(){
   return new Promise((rezolva, respinge) => {
     const nume = "__zm" + (++nrCereri) + "_" + Date.now();
     const el = document.createElement("script");
-
-    const ceas = setTimeout(() => { curata(); respinge(new Error("nu a răspuns la timp")); }, 15000);
+    const ceas = setTimeout(() => { curata(); respinge(new Error("foaia nu a raspuns la timp")); }, 15000);
     function curata(){
       clearTimeout(ceas);
       try{ delete window[nume]; }catch(e){ window[nume] = undefined; }
       if(el.parentNode) el.parentNode.removeChild(el);
     }
-
     window[nume] = d => { curata(); rezolva(d); };
-    el.onerror = () => { curata(); respinge(new Error("scriptul nu a putut fi contactat")); };
-
-    const q = new URLSearchParams(Object.assign(
-      { cheie: SINC.cheie, callback: nume, t: String(Date.now()) }, parametri || {}));
-    el.src = SINC.url + "?" + q.toString();
+    el.onerror = () => { curata(); respinge(new Error("foaia nu a putut fi contactata")); };
+    el.src = "https://docs.google.com/spreadsheets/d/" + SINC.foaie +
+             "/gviz/tq?tqx=out:json;responseHandler:" + nume +
+             "&tq=" + encodeURIComponent("select * order by A desc limit 120") +
+             "&t=" + Date.now();
     document.head.appendChild(el);
   });
+}
+
+/** Din randurile foii construim istoricul: pentru fiecare zi pastram cel mai recent. */
+function istoricDinFoaie(d){
+  const rezultat = {};
+  const randuri = (d && d.table && d.table.rows) || [];
+  for(const rand of randuri){
+    for(const celula of (rand.c || [])){
+      if(!celula || typeof celula.v !== "string") continue;
+      const text = celula.v.trim();
+      if(text.charAt(0) !== "{") continue;
+      try{
+        const o = JSON.parse(text);
+        if(o && o.zi && Array.isArray(o.gata) && !rezultat[o.zi]) rezultat[o.zi] = { gata: o.gata };
+      }catch(e){}
+    }
+  }
+  return rezultat;
+}
+
+/* Scrierea: un raspuns de formular. Cerere simpla, mereu acceptata. */
+function scrieInFormular(gata){
+  const corp = new URLSearchParams();
+  corp.append(SINC.camp, JSON.stringify({ zi: AZI, gata: gata }));
+  return fetch(SINC.formular, { method:"POST", mode:"no-cors", body: corp });
 }
 
 async function ceruteDeLaServer(){
@@ -1035,9 +1062,7 @@ async function ceruteDeLaServer(){
     if(!r.ok) throw new Error("raspuns " + r.status);
     return await r.json();
   }
-  const d = await cereScriptului();
-  if(!d || d.eroare) throw new Error(d && d.eroare ? d.eroare : "raspuns gol");
-  return d;
+  return istoricDinFoaie(await citesteFoaia());
 }
 
 async function incarcaIstoric(){
@@ -1045,7 +1070,7 @@ async function incarcaIstoric(){
   inlocuiesteIstoric(citesteLocal());
   aplicaStarile();
 
-  if(!SERVER && !SINC.url){ sincronizat = true; return; }
+  if(!SERVER && !SINC.foaie){ sincronizat = true; return; }
 
   try{
     const d = await ceruteDeLaServer();
@@ -1061,7 +1086,7 @@ async function incarcaIstoric(){
 
 /** Reia starea de la server — la revenirea în pagină și din minut în minut. */
 async function resincronizeaza(){
-  if(!SERVER && !SINC.url) return;
+  if(!SERVER && !SINC.foaie) return;
   try{
     const d = await ceruteDeLaServer();
     inlocuiesteIstoric(d);
@@ -1108,7 +1133,7 @@ function aratăSincronizarea(){
 
 let amanareSalvare = null;
 
-/* O singură încercare de trimitere. */
+/* O trimitere: scriem in formular, apoi verificam in foaie ca a ajuns cu adevarat. */
 function oTrimitere(gata){
   if(SERVER){
     return fetch("/api/stare",{
@@ -1117,10 +1142,15 @@ function oTrimitere(gata){
       body: JSON.stringify({ gata })
     }).then(r => { if(!r.ok) throw new Error("raspuns " + r.status); return true; });
   }
-  // acelasi transport prin element de script, ca sa nu depinda de reguli intre domenii
-  return cereScriptului({ actiune:"salveaza", data:AZI, gata: gata.join(",") })
+  return scrieInFormular(gata)
+    .then(() => new Promise(r => setTimeout(r, 2500)))
+    .then(() => citesteFoaia())
     .then(d => {
-      if(!d || d.eroare) throw new Error(d && d.eroare ? d.eroare : "raspuns gol");
+      const ist = istoricDinFoaie(d);
+      const acolo = (ist[AZI] && ist[AZI].gata) ? ist[AZI].gata : null;
+      if(!acolo) throw new Error("nu a ajuns inca in foaie");
+      const laFel = acolo.length === gata.length && gata.every(x => acolo.indexOf(x) !== -1);
+      if(!laFel) throw new Error("foaia are alta stare");
       return true;
     });
 }
@@ -1157,7 +1187,7 @@ function salveaza(){
   istoric[AZI] = { gata: TASKURI.filter(t=>stariLocale[t.id]==="done").map(t=>t.id) };
   scrieLocal();   // copie pe dispozitiv, ca să meargă și offline
 
-  if(!SERVER && !SINC.url) return;
+  if(!SERVER && !SINC.foaie) return;
 
   clearTimeout(amanareSalvare);
   amanareSalvare = setTimeout(trimiteLaServer, 800);
