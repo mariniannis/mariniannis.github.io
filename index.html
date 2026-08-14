@@ -470,7 +470,7 @@ html.cu-salut body.intra .wrap .card{animation:cardIntra .95s var(--lin) both}
       </label>
       <button type="button" class="lock-btn" id="lockbtn">Verifică parola</button>
       <p class="lock-err" id="lockerr"></p>
-      <p class="versiune">v11</p>
+      <p class="versiune">v13</p>
     </div>
   </div>
 </div>
@@ -738,16 +738,7 @@ let incercariGresite = 0;
 
 function anuntaIntruziune(){
   if(!SINC.url) return;
-  fetch(SINC.url, {
-    method:"POST",
-    headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body: JSON.stringify({
-      cheie: SINC.cheie,
-      tip: "alerta",
-      cand: new Date().toISOString(),
-      incercari: MAX_INCERCARI
-    })
-  }).catch(()=>{});
+  cereScriptului({ actiune:"alerta", cand:new Date().toISOString() }).catch(()=>{});
 }
 
 document.getElementById("ochi").addEventListener("click", ()=>{
@@ -965,7 +956,7 @@ const SERVER = document.body.dataset.server === "1";
    Câtă vreme `url` e gol, pagina merge normal, doar că punctajul rămâne
    pe dispozitiv. Se completează după ce scriptul e publicat. */
 const SINC = {
-  url: "https://script.google.com/macros/s/AKfycbw6llVYWNyWRbGntF_LO7cQDC-sE77sYypC4RKhd4vkUEGHLTYoVDCxnStpJW_i2tFDEg/exec",
+  url: "https://script.google.com/macros/s/AKfycbxZ1AJ6Hyj6QfJzNbT2mIWK63K5UGuuDhGvkZaIq3jBDdKNFDX-vzyZ2ovfzSAFIP-Bqw/exec",
   cheie: "rozi-ziua-mea-2026"
 };
 
@@ -1006,22 +997,47 @@ function aplicaStarile(){
   });
 }
 
+/* ---------------------------------------------------------------------------
+   TRANSPORTUL CĂTRE SCRIPT
+   Nu folosim `fetch`, ci încărcăm un element de script. Motivul: `fetch` către alt
+   domeniu trece prin verificări pe care browserul le poate refuza — și, când
+   le refuză, o face în tăcere. Un element de script nu e supus acelorași reguli, deci
+   merge din orice pagină, de pe orice telefon. Scriptul Google răspunde cu o
+   funcție pe care o apelăm noi.
+   --------------------------------------------------------------------------- */
+let nrCereri = 0;
+
+function cereScriptului(parametri){
+  return new Promise((rezolva, respinge) => {
+    const nume = "__zm" + (++nrCereri) + "_" + Date.now();
+    const el = document.createElement("script");
+
+    const ceas = setTimeout(() => { curata(); respinge(new Error("nu a răspuns la timp")); }, 15000);
+    function curata(){
+      clearTimeout(ceas);
+      try{ delete window[nume]; }catch(e){ window[nume] = undefined; }
+      if(el.parentNode) el.parentNode.removeChild(el);
+    }
+
+    window[nume] = d => { curata(); rezolva(d); };
+    el.onerror = () => { curata(); respinge(new Error("scriptul nu a putut fi contactat")); };
+
+    const q = new URLSearchParams(Object.assign(
+      { cheie: SINC.cheie, callback: nume, t: String(Date.now()) }, parametri || {}));
+    el.src = SINC.url + "?" + q.toString();
+    document.head.appendChild(el);
+  });
+}
+
 async function ceruteDeLaServer(){
   if(SERVER){
     const r = await fetch("/api/stare",{credentials:"same-origin"});
     if(!r.ok) throw new Error("raspuns " + r.status);
     return await r.json();
   }
-  const stop = new AbortController();
-  const ceas = setTimeout(()=>stop.abort(), 9000);
-  try{
-    const r = await fetch(SINC.url + "?cheie=" + encodeURIComponent(SINC.cheie) +
-                          "&t=" + Date.now(), {signal:stop.signal, cache:"no-store"});
-    if(!r.ok) throw new Error("raspuns " + r.status);
-    const d = await r.json();
-    if(!d || d.eroare) throw new Error(d && d.eroare ? d.eroare : "raspuns gol");
-    return d;
-  } finally { clearTimeout(ceas); }
+  const d = await cereScriptului();
+  if(!d || d.eroare) throw new Error(d && d.eroare ? d.eroare : "raspuns gol");
+  return d;
 }
 
 async function incarcaIstoric(){
@@ -1101,24 +1117,12 @@ function oTrimitere(gata){
       body: JSON.stringify({ gata })
     }).then(r => { if(!r.ok) throw new Error("raspuns " + r.status); return true; });
   }
-  // „text/plain” e intenționat: așa cererea rămâne simplă și scriptul Google
-  // o acceptă fără verificarea preliminară care ar bloca-o.
-  return fetch(SINC.url, {
-    method:"POST", cache:"no-store",
-    headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body: JSON.stringify({ cheie:SINC.cheie, data:AZI, gata })
-  }).then(r => { if(!r.ok) throw new Error("raspuns " + r.status); return true; });
-}
-
-/* Plasă de siguranță: dacă browserul refuză să citească răspunsul (reguli între
-   domenii), trimitem oricum datele — pe „no-cors” cererea pleacă, doar că nu-i
-   mai vedem răspunsul. Confirmăm apoi recitind starea de la server. */
-function trimitereOarba(gata){
-  return fetch(SINC.url, {
-    method:"POST", mode:"no-cors", cache:"no-store",
-    headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body: JSON.stringify({ cheie:SINC.cheie, data:AZI, gata })
-  }).then(()=>true);
+  // acelasi transport prin element de script, ca sa nu depinda de reguli intre domenii
+  return cereScriptului({ actiune:"salveaza", data:AZI, gata: gata.join(",") })
+    .then(d => {
+      if(!d || d.eroare) throw new Error(d && d.eroare ? d.eroare : "raspuns gol");
+      return true;
+    });
 }
 
 let seTrimite = false;
@@ -1139,18 +1143,6 @@ async function trimiteLaServer(){
       }catch(e){
         if(i < 2) await new Promise(r => setTimeout(r, 700 * (i + 1)));
       }
-    }
-
-    if(!SERVER && SINC.url){
-      try{
-        await trimitereOarba(gata);
-        // n-am putut citi răspunsul; întrebăm serverul dacă a primit
-        await new Promise(r => setTimeout(r, 1200));
-        const d = await ceruteDeLaServer().catch(()=>null);
-        const ajuns = d && d[AZI] && Array.isArray(d[AZI].gata) &&
-                      d[AZI].gata.length === gata.length;
-        if(ajuns){ sincronizat = true; starea("gata"); return; }
-      }catch(e){}
     }
 
     sincronizat = false; starea("esuat");
